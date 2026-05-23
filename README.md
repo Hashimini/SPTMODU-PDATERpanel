@@ -8,9 +8,24 @@ IF YOU ARE JUST USING MODU-PDATER BECAUSE YOUR TECH FRIEND TOLD YOU TO INSTALL I
 
 The MODU-PDATER SERVER is a lightweight Flask-based web server responsible for:
 
-* Hosting the update patches
-* Managing the `versions.json`
-* Providing download endpoints for launcher clients
+- Hosting update patches
+- Managing the `versions.json`
+- Providing download endpoints for launcher clients
+- Handling large patch uploads through chunked transfers
+
+---
+
+# New in v1.1 "CHUNKY"
+
+The server now supports chunked uploads for extremely large patch files.
+
+Main improvements:
+
+- Large file upload support
+- An upload retry system
+- Better VPN/unstable network handling
+- Abismal, like, immeasurable performance boost for RAM and CPU
+- Terminal logging
 
 ---
 
@@ -18,8 +33,9 @@ The MODU-PDATER SERVER is a lightweight Flask-based web server responsible for:
 
 Required software:
 
-* Python 3.10+
-* Flask
+- Python 3.10+
+- Flask
+- Waitress
 
 ---
 
@@ -27,52 +43,48 @@ Required software:
 
 ## 1. Install Python
 
-Download Python from:
-
-[Python Official Website](https://www.python.org/downloads)
+Download Python from: [Python Official Website](https://www.python.org/downloads)
 
 During installation, make sure to enable:
 
-```text id="j0fylt"
+```text
 Add Python to PATH
 ```
 
----
-
-## 2. Install Flask
+## 2. Install Dependencies
 
 Open a terminal inside the server folder and run:
 
-```bash id="b1ubf9"
-pip install flask
+```bash
+pip install flask waitress
 ```
 
 ---
 
 # Running the Server
 
-Inside the project folder, run:
+Create a folder for the server and run inside the folder:
 
-```bash id="3v2j8m"
-python app.py
+```bash
+python server.py
 ```
 
 The server will start on:
 
-```text id="lvr7q0"
+```text
 http://0.0.0.0:8080
 ```
 
 Admin panel:
 
-```text id="q6j1a3"
-http://YOUR_IP:8080/admin
+```text
+http://YOURLOCAL_IP:8080/admin
 ```
 
-Version manifest:
+Versions list:
 
-```text id="1ck3d9"
-http://YOUR_IP:8080/versions.json
+```text
+http://YOURLOCAL_IP:8080/versions.json
 ```
 
 ---
@@ -81,7 +93,7 @@ http://YOUR_IP:8080/versions.json
 
 Recommended structure:
 
-```text id="88e6d0"
+```text
 SERVER/
 ├── server.py
 ├── versions.json
@@ -90,46 +102,75 @@ SERVER/
 
 ---
 
+# Upload Flow
+
+The upload process now works like this:
+
+1. Select the `.zip` file.
+2. The file then is split into chunks (Default as 64mb).
+3. Chunks are uploaded sequentially, one by one.
+4. Failed chunks uploads retry automatically.
+5. Then the Server reconstructs the final `.zip`
+6. Metadata is registered into `versions.json`
+
 # Uploading a New Patch
 
 Open the admin panel:
 
-```text id="y88t6k"
-http://YOUR_IP:8080/admin
+```text
+http://YOURLOCAL_IP:8080/admin
 ```
 
 The panel allows you to:
 
-* Upload `.zip` patches
-* Register new versions
-* Delete uploaded versions
+- Upload `.zip` files
+- Register the new versions
+- Register obsolete files for deletion
+- Delete uploaded versions
+
+# Chunked Upload System
+
+Default chunk size:
+
+```text
+64MB per chunk
+```
+
+You can change freely on LINE 170
+```JavaScript
+const CHUNK_SIZE = 64 * 1024 * 1024;
+```
+
+Maximum upload size:
+
+```text
+100GB
+```
 
 ---
 
-# Creating a Patch
+# Creating the patch / `.zip`
 
 A patch should contain only the files you want to update.
 
 Example:
 
-```text id="l4uvtm"
-BepInEx/plugins/MyNewMod.dll
+```text
+BepInEx/plugins/BESTMOD.dll
 user/mods/MyMod/
 ```
 
-Compress the files into a `.zip` archive before uploading.
-
 ---
 
-# files_to_delete
+# Deleting Files
 
-The `files_to_delete` field allows the launcher to automatically remove obsolete files from client installations.
+The `files_to_delete` field allows the launcher to automatically remove files from client installations.
 
 Example:
 
-```text id="26vv0o"
-BepInEx/plugins/OldMod.dll
-BepInEx/config/oldmod.cfg
+```text
+BepInEx/plugins/BrokenMod.dll
+BepInEx/config/OldConfig.cfg
 ```
 
 Each line represents one file or folder.
@@ -140,15 +181,16 @@ Each line represents one file or folder.
 
 If you are hosting through:
 
-* Radmin VPN
-* Hamachi
-* or any other VPN software
+- Radmin VPN
+- Hamachi
+- ZeroTier
+- or any other VPN software
 
 You must use the Virtual IP or Public IP inside the `Server IP` field when uploading patches.
 
 Example:
 
-```text id="r56nxy"
+```text
 26.14.220.15:8080
 ```
 
@@ -156,19 +198,22 @@ Example:
 
 # Using Your Own Web Server
 
-You are NOT required to use the included Flask server.
+You arent, by any means, required to use my Flask/Waitress server.
 
-The launcher only requires:
+The MODU-PDATER launcher only requires:
 
-* A valid `versions.json`
-* Direct download links for patch files
-* Accessible HTTP/HTTPS endpoints
+- A valid `versions.json`
+- Direct download links for patch files
+- Accessible HTTP/HTTPS endpoints
 
 This means you can host the system on:
 
-* Nginx
-* Apache
-* Any custom web backend
+- Nginx
+- Apache
+- Custom backends
+- Cloud hosting providers
+- Dedicated servers
+- And so on...
 
 ---
 
@@ -176,7 +221,7 @@ This means you can host the system on:
 
 Example:
 
-```json id="k9v1so"
+```json
 [
     {
         "Version": "1.0.0",
@@ -199,34 +244,55 @@ Example:
 
 # Security Notes
 
-Do not expose your admin panel to the public internet unless you REALLY know what you are doing!!
+Do NOT expose your admin panel to the public internet unless you REALLY know what you are doing.
 
 This server does not include:
+
 - Authentication
 - Rate limiting
 - HTTPS
 - Upload restrictions
-- Virus Checker or Hash checking
+- Virus checking
+- Hash verification
 
-It is intended for private/community usage.
+It is intended for:
+- Private servers
+- Friend groups
+- Small communities
+- VPN/LAN environments
 
 ---
 
-# Important Notes
+# Recommended Usage
 
-* Version numbers should follow semantic versioning whenever possible
-* Keep old patch files available for incremental updates
+This project was mainly designed for:
+
+- Small SPT communities
+- Friend groups
+- Private modpacks
+- VPN-hosted servers
+- Lightweight self-hosted deployments
+
+It was NOT designed for:
+
+- Enterprise usage
+- Massive public hosting
+- Large-scale CDN distribution
 
 ---
 
 # General Workflow
 
-1. Create update patch
+1. Create the patch
 2. Compress patch into `.zip`
 3. Open `/admin`
 4. Upload patch
 5. Fill version information
-6. Publish update
+6. Publish the update
 7. Users update automatically through the launcher
+
+---
+
+# Developer Notes
 
 Yes the interface was 95% made by vibe coding, Its just a admin panel so I didnt cared that much for something most users wont interact...
