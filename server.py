@@ -27,7 +27,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <style>
         body { font-family: 'Courier New', Courier, monospace, sans-serif; background: #0A0B09; color: #D7D2C3; max-width: 700px; margin: 40px auto; padding: 20px; letter-spacing: 0.5px; }
         h1 { color: #E5DFC9; text-transform: uppercase; font-size: 24px; border-bottom: 2px solid #2A2E25; padding-bottom: 10px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
-        h1::after { content: "SYS_VERSION: 1.1 (CHUNKED)"; font-size: 11px; color: #6E7753; background: #1A1E17; padding: 4px 8px; border: 1px solid #2A2E25; }
+        h1::after { content: "SYS_VERSION: 1.1 (CHUNKY)"; font-size: 11px; color: #6E7753; background: #1A1E17; padding: 4px 8px; border: 1px solid #2A2E25; }
         h2 { color: #FFD36A; font-size: 16px; text-transform: uppercase; margin-top: 0; margin-bottom: 15px; display: flex; align-items: center; }
         h2::before { content: "// "; color: #6E7753; margin-right: 5px; }
         .card { background: #11130F; padding: 25px; border: 1px solid #2A2E25; border-top: 4px solid #6E7753; margin-bottom: 25px; box-shadow: 0 10px 20px #050505; }
