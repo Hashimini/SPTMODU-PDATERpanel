@@ -226,7 +226,7 @@ It is intended for private/community usage.
 3. Open `/admin`
 4. Upload patch
 5. Fill version information
-
-Yes the interface was 95% made by vibe coding, Its just a admin panel so I dint cared that much for something most users wont interact...
 6. Publish update
 7. Users update automatically through the launcher
+
+Yes the interface was 95% made by vibe coding, Its just a admin panel so I dint cared that much for something most users wont interact...
