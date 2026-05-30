@@ -1,7 +1,9 @@
 import os
 import json
+import threading
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, redirect
+from werkzeug.utils import secure_filename
 from waitress import serve
 
 app = Flask(__name__)
@@ -9,116 +11,283 @@ app = Flask(__name__)
 UPLOAD_FOLDER = 'files'
 JSON_FILE = 'versions.json'
 
+versions_lock = threading.Lock()
+cached_versions = []
+
 def log(message, level="INFO"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] [{level}] {message}")
 
+def _is_path_inside(base_dir, target_path):
+    base = os.path.abspath(base_dir)
+    target = os.path.abspath(target_path)
+    return target == base or target.startswith(base + os.sep)
+
+def load_versions_from_disk():
+    global cached_versions
+    if os.path.exists(JSON_FILE):
+        with open(JSON_FILE, 'r', encoding='utf-8') as f:
+            cached_versions = json.load(f)
+    else:
+        cached_versions = []
+
+def get_versions():
+    with versions_lock:
+        return list(cached_versions)
+
+def save_versions(versions):
+    global cached_versions
+    with versions_lock:
+        cached_versions = list(versions)
+        with open(JSON_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cached_versions, f, indent=4, ensure_ascii=False)
+
+def append_version(entry):
+    global cached_versions
+    with versions_lock:
+        cached_versions.append(entry)
+        with open(JSON_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cached_versions, f, indent=4, ensure_ascii=False)
+
+def remove_version(version_id):
+    global cached_versions
+    with versions_lock:
+        item = next((x for x in cached_versions if x['Version'] == version_id), None)
+        if not item:
+            return None
+        cached_versions = [x for x in cached_versions if x['Version'] != version_id]
+        with open(JSON_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cached_versions, f, indent=4, ensure_ascii=False)
+        return item
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+UPLOAD_FOLDER_ABSPATH = os.path.abspath(UPLOAD_FOLDER)
 
 if not os.path.exists(JSON_FILE):
     with open(JSON_FILE, 'w', encoding='utf-8') as f:
         json.dump([], f)
 
+load_versions_from_disk()
+
 HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>[ OPERATOR CONSOLE ] - ModUpdater</title>
+    <title>MODU-PDATER [ ADMIN CONSOLE ]</title>
+    <link href="https://fonts.googleapis.com/css2?family=Teko:wght@400;600&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Courier New', Courier, monospace, sans-serif; background: #0A0B09; color: #D7D2C3; max-width: 700px; margin: 40px auto; padding: 20px; letter-spacing: 0.5px; }
-        h1 { color: #E5DFC9; text-transform: uppercase; font-size: 24px; border-bottom: 2px solid #2A2E25; padding-bottom: 10px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
-        h1::after { content: "SYS_VERSION: 1.1 (CHUNKY)"; font-size: 11px; color: #6E7753; background: #1A1E17; padding: 4px 8px; border: 1px solid #2A2E25; }
-        h2 { color: #FFD36A; font-size: 16px; text-transform: uppercase; margin-top: 0; margin-bottom: 15px; display: flex; align-items: center; }
-        h2::before { content: "// "; color: #6E7753; margin-right: 5px; }
-        .card { background: #11130F; padding: 25px; border: 1px solid #2A2E25; border-top: 4px solid #6E7753; margin-bottom: 25px; box-shadow: 0 10px 20px #050505; }
-        label { display: block; font-size: 11px; text-transform: uppercase; color: #97927F; margin-top: 15px; margin-bottom: 5px; font-weight: bold; }
-        input[type="text"], textarea { width: 100%; padding: 12px; margin-bottom: 5px; border: 1px solid #2A2E25; background: #0A0B09; color: #D7D2C3; box-sizing: border-box; font-family: inherit; }
-        button { background: #D5A63A; color: #0A0B09; padding: 14px 20px; border: 1px solid #8E6720; cursor: pointer; font-weight: bold; width: 100%; text-transform: uppercase; letter-spacing: 1px; margin-top: 20px; }
-        button:hover { background: #F0C75E; }
-        .version-item { background: #1A1E17; border: 1px solid #2A2E25; padding: 15px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-        .version-info { max-width: 75%; } .version-title { color: #E5DFC9; font-size: 15px; }
-        .version-link { color: #6E7753; font-size: 11px; text-decoration: none; word-break: break-all; display: block; margin-top: 5px; }
-        #drop-zone { border: 2px dashed #4E5740; padding: 30px 20px; text-align: center; margin: 15px 0; background: #0A0B09; cursor: pointer; color: #97927F; text-transform: uppercase; font-size: 12px; }
-        #drop-zone.dragover { background: #2B3126; border-color: #8BCF5D; color: #E5DFC9; }
-        .btn-delete { background: #2A2E25; color: #D36242; text-decoration: none; border: 1px solid #D36242; font-weight: bold; padding: 8px 14px; font-size: 12px; text-transform: uppercase; }
-        .btn-delete:hover { background: #D36242; color: #0A0B09; }
-        .help-text { color: #FFB13C; font-size: 11px; margin-top: 2px; margin-bottom: 12px; display: block; }
-        .changelog-box { background: #0A0B09; border-left: 3px solid #D4A640; padding: 8px 12px; margin-top: 8px; font-size: 12px; color: #D7D2C3; white-space: pre-wrap; }
-        .wipe-box { background: #1C0F0F; border-left: 3px solid #D36242; padding: 6px 12px; margin-top: 6px; font-size: 11px; color: #EAB2A2; }
-        .wipe-box ul { margin: 4px 0 0 0; padding-left: 18px; }
+        body, html {
+            margin: 0; padding: 0; height: 100%;
+            background-color: #000000;
+            color: #D7D2C3;
+            font-family: 'Teko', 'Courier New', Courier, monospace;
+            overflow-x: hidden;
+        }
 
-        /* Estilos da Barra de Progresso */
-        .progress-container { display: none; background: #0A0B09; border: 1px solid #2A2E25; padding: 4px; margin-top: 20px; }
-        .progress-bar { height: 20px; background: #8BCF5D; width: 0%; transition: width 0.1s ease; }
-        .progress-text { font-size: 11px; color: #97927F; margin-top: 6px; text-align: center; text-transform: uppercase; font-weight: bold; }
+        /* Background Effects (Carbon & Vignette) */
+        .bg-pattern {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-image: repeating-linear-gradient(45deg, #050505 0, #050505 2px, transparent 2px, transparent 6px);
+            opacity: 0.45; z-index: -3; pointer-events: none;
+        }
+        .bg-vignette {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle at 50% 0%, rgba(0,0,0,0) 0%, rgba(0,0,0,0.8) 100%);
+            z-index: -2; pointer-events: none;
+        }
+
+        /* Fixed Decorative Elements (HUD) */
+        .hud { position: fixed; pointer-events: none; opacity: 0.15; z-index: -1; font-family: 'Courier New', monospace; font-size: 11px; }
+        .hud-tl { top: 40px; left: 35px; color: #8C8C8C; }
+        .hud-tr { top: 45px; right: 30px; color: #8C8C8C; }
+        .hud-bl { bottom: 17px; left: 40px; color: #8C8C8C; font-size: 9px; }
+        .hud-bc { bottom: 35px; left: 50%; transform: translateX(-50%); color: #F0C75E; font-size: 12px; letter-spacing: 2px; }
+        .hud-lc { top: 50%; left: 30px; transform: translateY(-50%); display: flex; flex-direction: column; gap: 5px; align-items: center; }
+        .hud-lc .sys { color: #D5A63A; font-weight: bold; font-size: 9px; writing-mode: vertical-rl; transform: rotate(180deg); }
+        .hud-lc .line { color: #D7D2C3; }
+        .hud-lc .lock { color: #8C8C8C; font-size: 9px; writing-mode: vertical-rl; }
+        .hud-rc { top: 50%; right: 40px; transform: translateY(-50%); text-align: right; font-size: 9px; color: #8C8C8C; line-height: 1.5; }
+        .hud-rc .divider { color: #333333; font-size: 10px; }
+
+        /* Main Container */
+        .container { max-width: 850px; margin: 40px auto; position: relative; padding: 20px; }
+        .main-border { border: 1px solid rgba(255,255,255,0.13); border-radius: 4px; padding: 25px; background: rgba(0,0,0,0.4); position: relative; }
+
+        /* Typography & Headings */
+        h1 { margin-top: 0; font-size: 26px; font-weight: bold; color: #E5DFC9; letter-spacing: 1px; display: flex; flex-direction: column; line-height: 1.1; }
+        h1 .sub { font-size: 14px; color: #8C8C8C; }
+        h2 { font-size: 20px; font-weight: bold; color: #D5A63A; letter-spacing: 1px; border-bottom: 1px solid #333333; padding-bottom: 5px; margin-bottom: 15px; text-transform: uppercase; }
+
+        /* Forms */
+        label { display: block; font-size: 13px; font-weight: bold; color: #8C8C8C; margin: 15px 0 5px 0; letter-spacing: 0.5px; font-family: 'Courier New', monospace; text-transform: uppercase; }
+        input[type="text"], textarea {
+            width: 100%; padding: 10px; background: #141414; color: #D7D2C3;
+            border: 1px solid #333333; border-radius: 0; outline: none;
+            font-family: 'Courier New', monospace; font-size: 13px; box-sizing: border-box; transition: all 0.2s;
+        }
+        input[type="text"]:focus, textarea:focus { background: #252525; border-color: #4F4F4F; }
+
+        /* Buttons */
+        .btn-primary {
+            background: linear-gradient(135deg, #5A6246, #2A2F22);
+            border: 1px solid #4A3A14; color: #E5DFC9; width: 100%;
+            padding: 12px; font-size: 20px; font-weight: bold; cursor: pointer;
+            letter-spacing: 1px; margin-top: 20px; transition: opacity 0.2s;
+            text-transform: uppercase; font-family: 'Teko', sans-serif;
+        }
+        .btn-primary:hover { opacity: 0.9; }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-delete {
+            background: #111111; border: 1px solid #552222; color: #D36242;
+            padding: 6px 12px; font-size: 16px; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-block; font-family: 'Teko', sans-serif; letter-spacing: 1px;
+        }
+        .btn-delete:hover { background: #331111; border-color: #D36242; color: #FFFFFF; }
+
+        /* Drop Zone */
+        #drop-zone {
+            border: 1px dashed #4F4F4F; background: #141414; padding: 25px; text-align: center;
+            color: #8C8C8C; cursor: pointer; margin: 10px 0; font-size: 13px; font-family: 'Courier New', monospace; transition: all 0.2s; text-transform: uppercase;
+        }
+        #drop-zone.dragover { border-color: #D5A63A; background: #252525; color: #D5A63A; }
+
+        /* Progress Bar */
+        .progress-wrapper { display: none; margin-top: 20px; }
+        .progress-container { background: #1C1C1C; border: 1px solid #333333; height: 24px; position: relative; }
+        .progress-bar {
+            height: 100%; width: 0%;
+            background: linear-gradient(to top, #8E6720 0%, #D5A63A 50%, #F0C75E 100%);
+            transition: width 0.1s ease;
+        }
+        .progress-text {
+            font-size: 13px; color: #FFFFFF; font-family: 'Courier New', monospace; text-shadow: 1px 1px 2px #000;
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; white-space: nowrap; font-weight: bold;
+        }
+        .progress-status-sub { text-align: center; font-size: 11px; color: #8C8C8C; margin-top: 6px; font-family: 'Courier New', monospace; text-transform: uppercase; }
+
+        /* Panels / Cards */
+        .panel { background: linear-gradient(to bottom, #191919, #111111); border: 1px solid #333333; padding: 20px; margin-bottom: 25px; position: relative; }
+
+        /* Golden Border Accents (Tactical Corners) */
+        .g-corner { position: absolute; background: #D5A63A; }
+        .tl-h { top: 6px; left: 6px; width: 13px; height: 2px; } .tl-v { top: 6px; left: 6px; width: 2px; height: 13px; }
+        .tr-h { top: 6px; right: 6px; width: 13px; height: 2px; } .tr-v { top: 6px; right: 6px; width: 2px; height: 13px; }
+        .bl-h { bottom: 6px; left: 6px; width: 13px; height: 2px; } .bl-v { bottom: 6px; left: 6px; width: 2px; height: 13px; }
+        .br-h { bottom: 6px; right: 6px; width: 13px; height: 2px; } .br-v { bottom: 6px; right: 6px; width: 2px; height: 13px; }
+
+        /* Version List */
+        .version-item { background: #141414; border: 1px solid #252525; border-left: 3px solid #D5A63A; padding: 15px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: flex-start; }
+        .version-info { width: 80%; }
+        .version-title { font-size: 22px; color: #D5A63A; font-weight: bold; margin-bottom: 5px; display: block; letter-spacing: 1px; }
+        .version-link { color: #8C8C8C; font-size: 11px; font-family: 'Courier New', monospace; text-decoration: none; word-break: break-all; margin-top: 10px; display: inline-block; }
+        .version-link:hover { color: #D7D2C3; }
+        .changelog-box { background: #0A0A0A; border: 1px solid #252525; padding: 10px; margin-top: 10px; font-size: 12px; color: #D7D2C3; font-family: 'Courier New', monospace; white-space: pre-wrap; }
+        .wipe-box { background: #1A1111; border-left: 2px solid #552222; padding: 8px 10px; margin-top: 10px; font-size: 11px; color: #D36242; font-family: 'Courier New', monospace; }
+        .wipe-box ul { margin: 5px 0 0 0; padding-left: 20px; }
+        .help-text { color: #8E6720; font-size: 11px; font-family: 'Courier New', monospace; display: block; margin-top: 5px; }
     </style>
 </head>
 <body>
-    <h1>MODU-PDATER<span style="color: #6E7753; font-size:14px;">[ADMIN_PANEL]</span></h1>
+    <div class="bg-pattern"></div>
+    <div class="bg-vignette"></div>
 
-    <div class="card">
-        <h2>Registrar Novo Patch</h2>
-        <form id="upload-form">
-            <label>IP (Endpoints de Download):</label>
-            <input type="text" id="server-ip-input" name="server_ip" value="{{ current_host }}" placeholder="ex: 200.10.23.14:8080" required />
-            <span class="help-text">⚠ Se estiver usando VPN, use o IP virtual mantendo a porta do servidor.</span>
-
-            <label>Identificador da Versão:</label>
-            <input type="text" name="version" placeholder="Ex: v2.4.0" required />
-
-            <label>Changelog:</label>
-            <textarea name="changelog" rows="4" placeholder="[+] ADDED: Novo Mod&#10;[x] FIXED: Bug corrigido"></textarea>
-
-            <label>Arquivos Obsoletos para Deletar nos Clientes (Um por linha):</label>
-            <textarea name="files_to_delete" rows="3" placeholder="BepInEx/plugins/ModQuebrado.dll"></textarea>
-
-            <label>Arquivo do Pacote (.zip):</label>
-            <div id="drop-zone">Arrastar e solte o arquivo .ZIP aqui ou clique</div>
-            <input type="file" id="file-input" name="file" accept=".zip" style="display:none;" required />
-            <p id="file-name" style="color:#8BCF5D; font-size:12px; font-weight:bold; margin: 5px 0 0 0;"></p>
-
-            <div class="progress-container" id="progress-container">
-                <div class="progress-bar" id="progress-bar"></div>
-            </div>
-            <div class="progress-text" id="progress-text"></div>
-
-            <button type="submit" id="btn-submit">Enviar Patch</button>
-        </form>
+    <div class="hud hud-tl">udi: 0B1A0N0G0B0O1O0</div>
+    <div class="hud hud-tr">.vv: 721     0.3.</div>
+    <div class="hud hud-bl">LAT. 69.420 // LON. -67.67</div>
+    <div class="hud hud-bc">____________________________________________________________________________________________</div>
+    <div class="hud hud-lc">
+        <span class="sys">● SYS_LINK</span>
+        <span class="line">|</span>
+        <span class="lock">LOCK.IN // N-402</span>
+    </div>
+    <div class="hud hud-rc">
+        USEC_COPILOT_IA<br>
+        <span class="divider">=================</span><br>
+        .NET_SDK_OK
     </div>
 
-    <div class="card">
-        <h2>Versões registradas no Servidor</h2>
-        <div id="versions-list">
-            {% if not versions %}
-                <p style="color: #666454; font-size: 13px;">Vazio</p>
-            {% else %}
-                {% for v in versions %}
-                    <div class="version-item">
-                        <div class="version-info">
-                            <strong class="version-title">DEPLOY_ID: <span style="color: #FFD36A;">{{ v.Version }}</span></strong>
-                            {% if v.Changelog %}
-                                <div class="changelog-box">{{ v.Changelog }}</div>
-                            {% else %}
-                                <div class="changelog-box" style="color: #666454; border-color: #2A2E25;">Nenhum changelog.</div>
-                            {% endif %}
-                            {% if v.files_to_delete %}
-                                <div class="wipe-box">
-                                    ARQUIVOS MARCADOS PARA REMOÇÃO:
-                                    <ul>
-                                        {% for file in v.files_to_delete %}
-                                            <li><code>{{ file }}</code></li>
-                                        {% endfor %}
-                                    </ul>
-                                </div>
-                            {% endif %}
-                            <a href="{{ v.Download }}" class="version-link" target="_blank">Target URL: {{ v.Download }}</a>
+    <div class="container">
+        <div class="main-border">
+            <h1>MOD MANAGER<span class="sub">ADMIN_PANEL v1.0.5</span></h1>
+
+            <div class="panel">
+                <div class="g-corner tl-h"></div><div class="g-corner tl-v"></div>
+                <div class="g-corner tr-h"></div><div class="g-corner tr-v"></div>
+                <div class="g-corner bl-h"></div><div class="g-corner bl-v"></div>
+                <div class="g-corner br-h"></div><div class="g-corner br-v"></div>
+
+                <h2>SERVER CONFIG // PATCH REGISTRATION</h2>
+                <form id="upload-form">
+                    <label>IP (Download Endpoints):</label>
+                    <input type="text" id="server-ip-input" name="server_ip" value="{{ current_host }}" placeholder="e.g. 200.10.23.14:8080" required />
+                    <span class="help-text">⚠ If using a VPN, use the virtual IP while keeping the server port.</span>
+
+                    <label>Version Identifier:</label>
+                    <input type="text" name="version" placeholder="e.g. v2.4.0" required />
+
+                    <label>LATEST_CHANGELOG.TXT:</label>
+                    <textarea name="changelog" rows="4" placeholder="[+] ADDED: New Mod&#10;[x] FIXED: Bug fix"></textarea>
+
+                    <label>Obsolete Files for Removal (WIPE) - One per line:</label>
+                    <textarea name="files_to_delete" rows="3" placeholder="BepInEx/plugins/BrokenMod.dll"></textarea>
+
+                    <label>Package File (.zip):</label>
+                    <div id="drop-zone">[ DRAG .ZIP FILE HERE OR CLICK ]</div>
+                    <input type="file" id="file-input" name="file" accept=".zip" style="display:none;" required />
+                    <p id="file-name" style="color:#D5A63A; font-size:12px; font-weight:bold; margin: 5px 0 0 0; font-family:'Courier New', monospace; text-align:center;"></p>
+
+                    <div class="progress-wrapper" id="progress-wrapper">
+                        <div class="progress-container">
+                            <div class="progress-bar" id="progress-bar"></div>
+                            <div class="progress-text" id="progress-text">WAITING</div>
                         </div>
-                        <div>
-                            <a href="/delete/{{ v.Version }}" class="btn-delete" onclick="return confirm('Confirmar destruição permanente?')">Wipe</a>
-                        </div>
+                        <div class="progress-status-sub" id="progress-status-sub">STATUS</div>
                     </div>
-                {% endfor %}
-            {% endif %}
+
+                    <button type="submit" id="btn-submit" class="btn-primary">DEPLOY_PATCH</button>
+                </form>
+            </div>
+
+            <div class="panel">
+                <div class="g-corner tl-h"></div><div class="g-corner tl-v"></div>
+                <div class="g-corner tr-h"></div><div class="g-corner tr-v"></div>
+                <div class="g-corner bl-h"></div><div class="g-corner bl-v"></div>
+                <div class="g-corner br-h"></div><div class="g-corner br-v"></div>
+
+                <h2>REGISTERED VERSIONS ON SERVER</h2>
+                <div id="versions-list">
+                    {% if not versions %}
+                        <p style="color: #555555; font-size: 13px; font-family: 'Courier New', monospace;">[ EMPTY DATABASE ]</p>
+                    {% else %}
+                        {% for v in versions %}
+                            <div class="version-item">
+                                <div class="version-info">
+                                    <span class="version-title">DEPLOY_ID: {{ v.Version }}</span>
+                                    {% if v.Changelog %}
+                                        <div class="changelog-box">{{ v.Changelog }}</div>
+                                    {% else %}
+                                        <div class="changelog-box" style="color: #555555;">[ NO CHANGELOG REGISTERED ]</div>
+                                    {% endif %}
+                                    {% if v.files_to_delete %}
+                                        <div class="wipe-box">
+                                            FILES MARKED FOR REMOVAL:
+                                            <ul>
+                                                {% for file in v.files_to_delete %}
+                                                    <li>{{ file }}</li>
+                                                {% endfor %}
+                                            </ul>
+                                        </div>
+                                    {% endif %}
+                                    <a href="{{ v.Download }}" class="version-link" target="_blank">> TARGET_URL: {{ v.Download }}</a>
+                                </div>
+                                <div>
+                                    <a href="/delete/{{ v.Version }}" class="btn-delete" onclick="return confirm('WARNING: Permanently delete this record and its physical file?')">WIPE</a>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    {% endif %}
+                </div>
+            </div>
         </div>
     </div>
 
@@ -130,9 +299,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const uploadForm = document.getElementById('upload-form');
         const btnSubmit = document.getElementById('btn-submit');
 
-        const progressContainer = document.getElementById('progress-container');
+        const progressWrapper = document.getElementById('progress-wrapper');
         const progressBar = document.getElementById('progress-bar');
         const progressText = document.getElementById('progress-text');
+        const progressStatusSub = document.getElementById('progress-status-sub');
 
         const savedIp = localStorage.getItem('saved_server_ip');
         if (savedIp) { serverIpInput.value = savedIp; }
@@ -145,18 +315,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             dropZone.classList.remove('dragover');
             if(e.dataTransfer.files.length) {
                 fileInput.files = e.dataTransfer.files;
-                fileName.innerText = '>>> PRONTO: ' + e.dataTransfer.files[0].name.toUpperCase();
+                fileName.innerText = '>>> READY: ' + e.dataTransfer.files[0].name.toUpperCase();
             }
         };
         fileInput.onchange = () => {
-            if(fileInput.files.length) fileName.innerText = '>>> PRONTO: ' + fileInput.files[0].name.toUpperCase();
+            if(fileInput.files.length) fileName.innerText = '>>> READY: ' + fileInput.files[0].name.toUpperCase();
         };
 
         uploadForm.onsubmit = async (e) => {
             e.preventDefault();
             localStorage.setItem('saved_server_ip', serverIpInput.value);
 
-            if (!fileInput.files.length) return alert("Por favor, selecione um arquivo ZIP.");
+            if (!fileInput.files.length) return alert("[ERROR] Please select a ZIP file.");
 
             const file = fileInput.files[0];
             const version = uploadForm.elements['version'].value;
@@ -164,15 +334,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const filesToDeleteRaw = uploadForm.elements['files_to_delete'].value;
             const serverIp = serverIpInput.value;
 
-            const files_to_delete = filesToDeleteRaw.split('\\n').map(l => l.trim()).filter(l => l);
+            const files_to_delete = filesToDeleteRaw.split('\n').map(l => l.trim()).filter(l => l);
 
-            // Configuração do tamanho do pedaço: 10MB por pedaço
+            // Chunk configuration: 10MB per chunk (changed to 10MB logically, but kept original 64MB logic from Python string)
             const CHUNK_SIZE = 64 * 1024 * 1024;
             const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
             btnSubmit.disabled = true;
-            btnSubmit.innerText = "ENVIANDO...";
-            progressContainer.style.display = 'block';
+            btnSubmit.innerText = "UPLOADING...";
+            progressWrapper.style.display = 'block';
 
             for (let i = 0; i < totalChunks; i++) {
                 const start = i * CHUNK_SIZE;
@@ -189,7 +359,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                 while (!success && attempts < 3) {
                     try {
-                        progressText.innerText = `[BLOCO ${i + 1}/${totalChunks}] Enviando dados... (Tentativa ${attempts + 1})`;
+                        progressStatusSub.innerText = `[CHUNK ${i + 1}/${totalChunks}] UPLOADING DATA... (ATTEMPT ${attempts + 1})`;
                         const response = await fetch('/upload-chunk', {
                             method: 'POST',
                             body: formData
@@ -202,23 +372,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         }
                     } catch (err) {
                         attempts++;
-                        await new Promise(resolve => setTimeout(resolve, 2000)); // Espera 2 segundos antes de tentar de novo
+                        await new Promise(resolve => setTimeout(resolve, 2000));
                     }
                 }
 
                 if (!success) {
-                    alert(`Erro crítico: Conexão perdida no bloco ${i+1}. O upload foi abortado.`);
+                    alert(`[CRITICAL ERROR] Connection lost on chunk ${i+1}. Upload aborted.`);
                     btnSubmit.disabled = false;
-                    btnSubmit.innerText = "Enviar Patch";
+                    btnSubmit.innerText = "DEPLOY_PATCH";
                     return;
                 }
 
                 const percentage = Math.round(((i + 1) / totalChunks) * 100);
                 progressBar.style.width = percentage + '%';
-                progressText.innerText = `PROGRESSO DE UPLOAD: ${percentage}%`;
+                progressText.innerText = `${percentage}%`;
             }
 
-            progressText.innerText = "STATUS: SALVANDO METADADOS DO PATCH...";
+            progressStatusSub.innerText = "[ SAVING PATCH METADATA... ]";
 
             try {
                 const finalResponse = await fetch('/register-version', {
@@ -234,14 +404,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 });
 
                 if (finalResponse.ok) {
-                    progressText.style.color = '#8BCF5D';
-                    progressText.innerText = ">>> SUCESSO! DEPLOY CONCLUÍDO COMPLEMENTE.";
+                    progressText.innerText = "COMPLETE";
+                    progressStatusSub.style.color = '#D5A63A';
+                    progressStatusSub.innerText = ">>> SUCCESS! DEPLOY FINISHED COMPLETELY.";
                     setTimeout(() => window.location.href = '/admin', 1500);
                 } else {
-                    alert("Erro ao salvar os metadados no JSON final.");
+                    alert("[ERROR] Failed to save metadata to the final JSON.");
                 }
             } catch (err) {
-                alert("Erro ao comunicar finalização do patch.");
+                alert("[ERROR] Communication failure during patch finalization.");
             }
         };
     </script>
@@ -250,31 +421,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 @app.route('/versions.json', methods=['GET'])
 def get_json():
-    log(f"Cliente requisitou versions.json | IP={request.remote_addr}")
-
-    with open(JSON_FILE, 'r', encoding='utf-8') as f:
-        return jsonify(json.load(f))
+    log(f"Client requested versions.json | IP={request.remote_addr}")
+    return jsonify(get_versions())
 
 
 @app.route('/files/<filename>', methods=['GET'])
 def get_file(filename):
     from flask import send_from_directory
 
-    log(f"Download solicitado: {filename} | IP={request.remote_addr}")
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        log(f"Invalid download filename rejected | Raw={filename}", "WARN")
+        return jsonify({"status": "error", "message": "Invalid filename"}), 400
 
-    return send_from_directory(UPLOAD_FOLDER, filename)
+    log(f"Download requested: {safe_name} | IP={request.remote_addr}")
+    return send_from_directory(UPLOAD_FOLDER, safe_name)
 
 
 @app.route('/admin', methods=['GET'])
 def admin():
-    log(f"Painel admin acessado | IP={request.remote_addr}")
-
-    with open(JSON_FILE, 'r', encoding='utf-8') as f:
-        versions = json.load(f)
-
+    log(f"Admin panel accessed | IP={request.remote_addr}")
     return render_template_string(
         HTML_TEMPLATE,
-        versions=versions,
+        versions=get_versions(),
         current_host=request.host
     )
 
@@ -284,36 +453,41 @@ def upload_chunk():
     try:
         file_chunk = request.files.get('file')
 
-        filename = request.form.get('filename') or (
+        raw_filename = request.form.get('filename') or (
             file_chunk.filename if file_chunk else "patch.zip"
         )
+        filename = secure_filename(raw_filename)
 
         chunk_index = int(request.form.get('chunk_index', 0))
 
         if not file_chunk or not filename:
-            log("Upload inválido recebido.", "WARN")
-            return "Dados inválidos.", 400
+            log("Invalid upload received.", "WARN")
+            return jsonify({"status": "error", "message": "Invalid data"}), 400
 
         file_path = os.path.join(UPLOAD_FOLDER, filename)
+        abs_path = os.path.abspath(file_path)
+
+        if not _is_path_inside(UPLOAD_FOLDER, abs_path):
+            log(f"Path traversal blocked on upload | Raw={raw_filename}", "WARN")
+            return jsonify({"status": "error", "message": "Invalid filename"}), 400
 
         mode = 'wb' if chunk_index == 0 else 'ab'
-
         chunk_data = file_chunk.read()
 
-        with open(file_path, mode) as f:
+        with open(abs_path, mode) as f:
             f.write(chunk_data)
 
         size_mb = round(len(chunk_data) / (1024 * 1024), 2)
 
         log(
-            f"Chunk salvo | Arquivo={filename} | Chunk={chunk_index} | "
-            f"Tamanho={size_mb}MB | Modo={mode}"
+            f"Chunk saved | File={filename} | Chunk={chunk_index} | "
+            f"Size={size_mb}MB | Mode={mode}"
         )
 
         return jsonify({"status": "chunk_saved"}), 200
 
     except Exception as e:
-        log(f"Erro ao salvar chunk: {e}", "ERROR")
+        log(f"Failed to save chunk: {e}", "ERROR")
         return jsonify({"status": "error"}), 500
 
 
@@ -323,21 +497,30 @@ def register_version():
         data = request.json
 
         version = data.get('version')
-        filename = data.get('filename')
+        raw_filename = data.get('filename', '')
+        filename = secure_filename(raw_filename)
         changelog = data.get('changelog', '')
         files_to_delete = data.get('files_to_delete', [])
         server_ip = data.get('server_ip') or request.host
 
         log(
-            f"Registrando versão | Version={version} | "
-            f"Arquivo={filename} | IP={server_ip}"
+            f"Registering version | Version={version} | "
+            f"File={filename} | IP={server_ip}"
         )
 
         if not version or not filename:
-            log("Falha ao registrar versão: parâmetros faltando.", "WARN")
+            log("Failed to register version: missing parameters.", "WARN")
             return jsonify({
                 "status": "error",
-                "message": "Faltam parâmetros"
+                "message": "Missing parameters"
+            }), 400
+
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        if not _is_path_inside(UPLOAD_FOLDER, os.path.abspath(file_path)):
+            log(f"Path traversal blocked on register | Raw={raw_filename}", "WARN")
+            return jsonify({
+                "status": "error",
+                "message": "Invalid filename"
             }), 400
 
         download_url = f"http://{server_ip}/files/{filename}"
@@ -349,106 +532,74 @@ def register_version():
             "files_to_delete": files_to_delete
         }
 
-        with open(JSON_FILE, 'r+', encoding='utf-8') as f:
-            versions = json.load(f)
+        append_version(new_entry)
 
-            versions.append(new_entry)
-
-            f.seek(0)
-
-            json.dump(
-                versions,
-                f,
-                indent=4,
-                ensure_ascii=False
-            )
-
-            f.truncate()
-
-        log(
-            f"Versão registrada com sucesso | "
-            f"Version={version}"
-        )
+        log(f"Version registered successfully | Version={version}")
 
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        log(f"Erro ao registrar versão: {e}", "ERROR")
+        log(f"Failed to register version: {e}", "ERROR")
         return jsonify({"status": "error"}), 500
 
 
 @app.route('/delete/<version>', methods=['GET'])
 def delete(version):
-    log(f"Solicitação de wipe | Version={version}")
+    log(f"Wipe requested | Version={version}")
 
-    with open(JSON_FILE, 'r+', encoding='utf-8') as f:
-        data = json.load(f)
+    with versions_lock:
+        item = next((x for x in cached_versions if x['Version'] == version), None)
 
-        item = next(
-            (x for x in data if x['Version'] == version),
-            None
-        )
+    if not item:
+        log(f"Attempt to delete non-existent version: {version}", "WARN")
+        return redirect('/admin')
 
-        if item:
-            try:
-                filename = item['Download'].split('/')[-1]
+    try:
+        raw_filename = item['Download'].split('/')[-1]
+        filename = secure_filename(raw_filename)
 
-                file_path = os.path.join(
-                    UPLOAD_FOLDER,
-                    filename
-                )
-
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-
-                    log(
-                        f"Arquivo físico deletado | "
-                        f"Arquivo={filename}"
-                    )
-
-            except Exception as e:
-                log(
-                    f"Não foi possível deletar arquivo físico: {e}",
-                    "WARN"
-                )
-
-            data.remove(item)
-
-            f.seek(0)
-
-            json.dump(
-                data,
-                f,
-                indent=4,
-                ensure_ascii=False
-            )
-
-            f.truncate()
-
+        if not filename:
             log(
-                f"Versão removida do JSON | "
-                f"Version={version}"
-            )
-
-        else:
-            log(
-                f"Tentativa de deletar versão inexistente: {version}",
+                f"Invalid filename on delete | Version={version} | Raw={raw_filename}",
                 "WARN"
             )
+        else:
+            file_path = os.path.join(UPLOAD_FOLDER, filename)
+            abs_path = os.path.abspath(file_path)
+
+            if not _is_path_inside(UPLOAD_FOLDER, abs_path):
+                log(
+                    f"Path traversal blocked on delete | Version={version} | "
+                    f"Path={abs_path}",
+                    "WARN"
+                )
+            elif os.path.exists(abs_path):
+                os.remove(abs_path)
+                log(f"Physical file deleted | File={filename}")
+            else:
+                log(f"Physical file not found | File={filename}", "WARN")
+
+    except Exception as e:
+        log(f"Could not delete physical file: {e}", "WARN")
+
+    removed = remove_version(version)
+    if removed:
+        log(f"Version removed from JSON | Version={version}")
 
     return redirect('/admin')
 
 
 if __name__ == '__main__':
-    print("==============================")
-    print("    MODU-PDATER SERVER  ")
-    print("==============================")
+    print("=======================================")
+    print("    MODU-PDATER SERVER [TACTICAL]      ")
+    print("=======================================")
 
-    log("Inicializando...")
+    log("Starting server...")
     log("Host: 0.0.0.0")
-    log("Porta: 8080")
+    log("Port: 8080")
     log("Threads: 32")
     log("Max Body Size: 100GB")
+    log(f"Loaded {len(cached_versions)} version(s) into memory cache")
 
     try:
         serve(
@@ -460,4 +611,4 @@ if __name__ == '__main__':
         )
 
     except Exception as e:
-        log(f"Erro fatal no servidor: {e}", "FATAL")
+        log(f"Fatal server error: {e}", "FATAL")
