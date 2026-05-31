@@ -208,7 +208,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <div class="container">
         <div class="main-border">
-            <h1>MOD MANAGER<span class="sub">ADMIN_PANEL v1.0.5</span></h1>
+            <h1>MOD MANAGER<span class="sub">ADMIN_PANEL v1.1.0 [ CHUNKY ]</span></h1>
 
             <div class="panel">
                 <div class="g-corner tl-h"></div><div class="g-corner tl-v"></div>
